@@ -27,7 +27,7 @@ app.post('/kommo-webhook', async (req, res) => {
         // o directamente 'message' en algunos casos
         let messageData = null;
 
-        if (parsed.message && parsed.message.add && parsed.notes.add[0]) {
+        if (parsed.message && parsed.message.add && parsed.message.add[0]) {
             const note = parsed.message.add[0];
             messageData = {
                 text: note.text,
