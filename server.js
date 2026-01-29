@@ -10,7 +10,7 @@ const ACCESS_TOKEN = 'tu_long_lived_token_o_refresh';
 app.post('/kommo-webhook', async (req, res) => {
   try {
     const data = req.body;
-    console.log(req.body);
+    console.log(req);
     console.log('Webhook recibido:', JSON.stringify(data, null, 2));
 
     // Solo procesar mensajes entrantes
