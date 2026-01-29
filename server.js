@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const qs = require('qs');
+require('dotenv').config();
 
 const app = express();
 
@@ -10,8 +11,8 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Opcional: también aceptar JSON por si cambias a webhook de chats
 app.use(express.json({ limit: '10mb' }));
 
-const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN || 'tucuenta'; // mejor usar variables de entorno en Vercel
-const ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN || 'tu_long_lived_token_o_refresh';
+const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN; // mejor usar variables de entorno en Vercel
+const ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
 
 // Webhook endpoint
 app.post('/kommo-webhook', async (req, res) => {
@@ -45,7 +46,7 @@ app.post('/kommo-webhook', async (req, res) => {
             return res.sendStatus(200);
         }
 
-        const chatId = messageData.chat_id || messageData.params?.chat_id;
+        const chatId = messageData.chat_id;
         if (!chatId) {
             console.log('No se encontró chat_id → no se puede responder');
             return res.sendStatus(200);
@@ -60,6 +61,8 @@ app.post('/kommo-webhook', async (req, res) => {
         } else if (userMessage.includes('cotizar') || userMessage.includes('precio') || userMessage.includes('cuánto cuesta')) {
             respuesta = '¡Claro! Dime qué producto o servicio te interesa y te paso los precios actualizados.';
         }
+
+        console.log(`Respuesta del bot ${respuesta}`);
 
         // 4. Enviar respuesta vía API de Kommo
         await axios.post(
