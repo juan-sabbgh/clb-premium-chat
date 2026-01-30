@@ -92,60 +92,63 @@ app.post('/kommo-webhook', async (req, res) => {
 
 app.post('/wazzup-webhook', async (req, res) => {
     try {
-        // 1. Parsear el body (ya viene parseado por urlencoded, pero qs ayuda con nesting profundo)
-        const rawBody = req.body; // ya es objeto gracias a express.urlencoded
-        if (!rawBody?.messages[0]?.status == "inbound") {
-            return res.sendStatus(200);
-        }
-        console.log(`Body wazzup: ${JSON.stringify(rawBody)}`);
+        const rawBody = req.body;
 
-        //Sacar datos importantes del mensaje
-        let messageData = null;
-
-        if (rawBody.messages && rawBody.messages[0]) {
-            const data = rawBody.messages[0];
-            messageData = {
-                text: data.text,
-                chatId: data.chatId,
-                channelId: data.channelId,
-                dateTime: data.dateTime,
-            };
-
-        }
-
-        console.log(messageData);
-
-        if (!messageData || !messageData.text) {
-            console.log('No es un mensaje entrante o no tiene texto → ignorado');
+        // 1. Validar que exista el array de mensajes
+        if (!rawBody.messages || rawBody.messages.length === 0) {
             return res.sendStatus(200);
         }
 
-        //obtener respuesta del bot
-        let respuesta = "Holaaa 123"
+        const msg = rawBody.messages[0];
 
-        //Enviar mensaje
+        // --- EL FILTRO ANTI-LOOP (CRÍTICO) ---
+        // Usamos dos condiciones basadas en TU JSON:
+        // A. Si msg.isEcho es true, significa que es un mensaje enviado por ti (o el bot).
+        // B. Si msg.status NO es 'inbound', no nos interesa.
+        if (msg.isEcho === true || msg.status !== 'inbound') {
+            console.log(`Mensaje saliente o echo ignorado. (isEcho: ${msg.isEcho})`);
+            return res.sendStatus(200);
+        }
+
+        console.log(`Mensaje entrante REAL: ${msg.text}`);
+
+        // 2. Extraer datos
+        const messageData = {
+            text: msg.text,
+            chatId: msg.chatId,
+            channelId: msg.channelId,
+        };
+
+        // 3. Validar que tenga texto (ignorar fotos solas o audios por ahora)
+        if (!messageData.text) {
+            return res.sendStatus(200);
+        }
+
+        // --- TU LÓGICA DEL BOT ---
+        const respuesta = "Holaaa 123";
+
+        // 4. Enviar mensaje
         await axios.post(
             'https://api.wazzup24.com/v3/message',
             {
-                channelId: messageData.channelId, // ID de tu canal de Wazzup
+                channelId: messageData.channelId,
                 chatType: "whatsapp",
-                chatId: messageData.chatId, // Número destino (con código país, sin +)
+                chatId: messageData.chatId,
                 text: respuesta
             },
             {
                 headers: {
-                    'Authorization': `Bearer ${API_WAZZUP}`, // Tu llave Sidecar
+                    'Authorization': `Bearer ${API_WAZZUP}`,
                     'Content-Type': 'application/json'
                 }
             }
         );
 
-        console.log(`Respuesta enviada a chat ${messageData.chatId}: ${respuesta}`);
-
+        console.log(`Respuesta enviada a ${messageData.chatId}`);
         res.sendStatus(200);
+
     } catch (err) {
-        console.error('Error procesando webhook:', err.message);
-        // SIEMPRE responder 200 para que Kommo no reintente infinitamente
+        console.error('Error:', err.message);
         res.sendStatus(200);
     }
 });
