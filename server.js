@@ -95,7 +95,7 @@ app.post('/wazzup-webhook', async (req, res) => {
     try {
         // 1. Parsear el body (ya viene parseado por urlencoded, pero qs ayuda con nesting profundo)
         const rawBody = req.body; // ya es objeto gracias a express.urlencoded
-        console.log(`Body wazzup: ${rawBody}`);
+        console.log(`Body wazzup: ${JSON.stringify(rawBody)}`);
         //const parsed = qs.parse(rawBody, { depth: 20, allowDots: true, comma: true });
 
         //console.log('Webhook recibido (parsed):', JSON.stringify(parsed, null, 2));
