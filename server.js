@@ -95,9 +95,9 @@ app.post('/wazzup-webhook', async (req, res) => {
         const rawBody = req.body;
 
         // 1. Validar que exista el array de mensajes
-        if (!rawBody.messages || rawBody.messages.length === 0) {
+        /*if (!rawBody.messages || rawBody.messages.length === 0) {
             return res.sendStatus(200);
-        }
+        }*/
 
         const msg = rawBody.messages[0];
 
