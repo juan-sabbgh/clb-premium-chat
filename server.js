@@ -16,78 +16,131 @@ const API_WAZZUP = process.env.API_WAZZUP;
 // Webhook endpoint
 app.post('/kommo-webhook', async (req, res) => {
     try {
-        // 1. Parsear el body (ya viene parseado por urlencoded, pero qs ayuda con nesting profundo)
-        const rawBody = req.body; // ya es objeto gracias a express.urlencoded
-        console.log(`Raw body: ${rawBody}`);
+        // 1. PARSEO DE DATOS (Igual que en tu código original)
+        const rawBody = req.body;
         const parsed = qs.parse(rawBody, { depth: 20, allowDots: true, comma: true });
 
-        console.log('Webhook recibido (parsed):', JSON.stringify(parsed, null, 2));
+        console.log('Webhook recibido:', JSON.stringify(parsed, null, 2));
 
-        // 2. Detectar si es un evento de mensaje entrante (estructura típica de webhook general)
-        // Ejemplo común: notes[add][0][note_type] === 'message' o 'common'
-        // o directamente 'message' en algunos casos
-        let messageData = null;
-
-        if (parsed.message && parsed.message.add && parsed.message.add[0]) {
-            const note = parsed.message.add[0];
-            messageData = {
-                text: note.text,
-                chat_id: note.chat_id,
-                contact_id: note.author.id,
-                // ... puedes extraer más
-            };
-
-        }
-
-        console.log(messageData);
-
-        if (!messageData || !messageData.text) {
-            console.log('No es un mensaje entrante o no tiene texto → ignorado');
+        // Verificación básica
+        if (!parsed.message || !parsed.message.add || !parsed.message.add[0]) {
+            console.log('No es un mensaje entrante válido.');
             return res.sendStatus(200);
         }
 
-        const chatId = messageData.chat_id;
-        if (!chatId) {
-            console.log('No se encontró chat_id → no se puede responder');
+        const note = parsed.message.add[0];
+
+        // 2. EXTRACCIÓN DE DATOS (Necesarios para replicar el nodo de n8n)
+        // El nodo n8n usa: element_id, talk_id, contact_id, account[id], chat_id
+        const messageData = {
+            text: note.text,
+            chat_id: note.chat_id,
+            element_id: note.element_id, // ID del Lead
+            talk_id: note.talk_id,       // ID de la conversación
+            contact_id: note.contact_id, // ID del contacto
+            author_id: note.author.id,   // ID de quien envía
+            account_id: parsed.account.id // ID de la cuenta global
+        };
+
+        if (!messageData.text || !messageData.chat_id) {
             return res.sendStatus(200);
         }
 
+        // Lógica simple de respuesta (Tu IA o lógica condicional)
         const userMessage = (messageData.text || '').toLowerCase().trim();
-
-        // 3. Lógica simple del bot (reemplaza con LLM cuando quieras)
-        let respuesta = 'No entendí, ¿puedes repetir por favor?';
-        if (userMessage.includes('hola') || userMessage.includes('buenos') || userMessage.includes('qué tal')) {
-            respuesta = '¡Hola! ¿En qué te puedo ayudar hoy? 😊';
-        } else if (userMessage.includes('cotizar') || userMessage.includes('precio') || userMessage.includes('cuánto cuesta')) {
-            respuesta = '¡Claro! Dime qué producto o servicio te interesa y te paso los precios actualizados.';
+        let respuestaBot = 'No entendí, ¿puedes repetir?';
+        
+        if (userMessage.includes('hola')) {
+            respuestaBot = '¡Hola! Soy el vendedor de Jerseys. ¿Qué buscas hoy?';
+        } else {
+            respuestaBot = `Recibí tu mensaje: "${messageData.text}". En breve te atiendo.`;
         }
 
-        console.log(`Respuesta del bot ${respuesta}`);
-
-        // 4. Enviar respuesta vía API de Kommo
-        await axios.post(
-            `https://${KOMMO_SUBDOMAIN}.kommo.com/api/v4/chats/messages`,
-            {
-                chat_id: chatId,
-                text: respuesta,
-                type: 'text',
-                // Opcional: from: 'bot' para que aparezca como Salesbot
-            },
+        // ---------------------------------------------------------
+        // PASO 3: REPLICAR NODO "Get token" (n8n)
+        // URL: https://[subdomain].kommo.com/ajax/v1/chats/session
+        // ---------------------------------------------------------
+        console.log('Obteniendo token de sesión de chat...');
+        
+        const sessionUrl = `https://${KOMMO_SUBDOMAIN}.kommo.com/ajax/v1/chats/session`;
+        
+        const sessionResponse = await axios.post(
+            sessionUrl,
+            qs.stringify({
+                'request[chats][session][action]': 'create'
+            }),
             {
                 headers: {
-                    Authorization: `Bearer ${ACCESS_TOKEN}`,
-                    'Content-Type': 'application/json'
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    // Importante: Usamos el token Bearer para autenticar esta petición AJAX
+                    'Authorization': `Bearer ${ACCESS_TOKEN}`, 
+                    // A veces Kommo requiere simular Cookies o User-Agent, 
+                    // pero con el Bearer suele bastar para este endpoint.
                 }
             }
         );
 
-        console.log(`Respuesta enviada a chat ${chatId}: ${respuesta}`);
+        // Extraemos la info necesaria de la respuesta del token
+        // n8n path: $json.response.chats.session.access_token
+        const sessionData = sessionResponse.data.response.chats.session;
+        const amojoAccessToken = sessionData.access_token;
+        const personaName = sessionData.user.name;
+        const personaAvatar = sessionData.user.avatar;
+        // n8n usa account.id del session response, aunque ya lo tenemos del webhook
+        const sessionAccountId = sessionData.account.id; 
 
+        console.log('Token de chat obtenido con éxito.');
+
+        // ---------------------------------------------------------
+        // PASO 4: REPLICAR NODO "Enviar el mensaje" (n8n)
+        // URL: https://amojo.kommo.com/v1/chats/[account_id]/[chat_id]/messages
+        // ---------------------------------------------------------
+        
+        const amojoUrl = `https://amojo.kommo.com/v1/chats/${sessionAccountId}/${messageData.chat_id}/messages`;
+
+        // Construimos el body tal cual lo hace n8n (form-urlencoded)
+        const messagePayload = {
+            silent: 'false',
+            priority: 'low',
+            'crm_entity[id]': messageData.element_id, // Lead ID donde se guarda
+            'crm_entity[type]': '2', // 2 = Lead
+            persona_name: personaName,
+            persona_avatar: personaAvatar,
+            text: respuestaBot, // La respuesta generada
+            recipient_id: messageData.author_id,
+            crm_dialog_id: messageData.talk_id,
+            crm_contact_id: messageData.contact_id,
+            crm_account_id: messageData.account_id,
+            skip_link_shortener: 'true'
+        };
+
+        await axios.post(
+            amojoUrl,
+            qs.stringify(messagePayload), // Axios no stringify por defecto a form-urlencoded complejo
+            {
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Auth-Token': amojoAccessToken, // Token obtenido en el paso anterior
+                    'chatId': messageData.chat_id
+                }
+            }
+        );
+
+        console.log(`Respuesta enviada correctamente al chat ${messageData.chat_id}`);
         res.sendStatus(200);
+
     } catch (err) {
-        console.error('Error procesando webhook:', err.message);
-        // SIEMPRE responder 200 para que Kommo no reintente infinitamente
-        res.sendStatus(200);
+        // Manejo de errores detallado para depuración
+        console.error('Error en el proceso:');
+        if (err.response) {
+            console.error(`Status: ${err.response.status}`);
+            console.error('Data:', JSON.stringify(err.response.data, null, 2));
+        } else {
+            console.error(err.message);
+        }
+        res.sendStatus(200); // Siempre devolver 200 a Kommo
     }
 });
 
