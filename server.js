@@ -16,54 +16,65 @@ const API_WAZZUP = process.env.API_WAZZUP;
 // Webhook endpoint
 app.post('/kommo-webhook', async (req, res) => {
     try {
-        // 1. PARSEO DE DATOS (Igual que en tu código original)
         const rawBody = req.body;
+        // Parseamos el body
         const parsed = qs.parse(rawBody, { depth: 20, allowDots: true, comma: true });
 
-        console.log('Webhook recibido:', JSON.stringify(parsed, null, 2));
+        console.log('Webhook recibido');
 
-        // Verificación básica
+        // Validación básica
         if (!parsed.message || !parsed.message.add || !parsed.message.add[0]) {
-            console.log('No es un mensaje entrante válido.');
             return res.sendStatus(200);
         }
 
         const note = parsed.message.add[0];
 
-        // 2. EXTRACCIÓN DE DATOS (Necesarios para replicar el nodo de n8n)
-        // El nodo n8n usa: element_id, talk_id, contact_id, account[id], chat_id
+        // 1. DETECCIÓN DINÁMICA DEL DOMINIO
+        // El JSON trae: "account": { "_links": { "self": "https://juandyna43.amocrm.com" } }
+        // Debemos usar EXACTAMENTE ese dominio base.
+        let baseDomain = 'kommo.com'; // Fallback
+        let accountUrl = '';
+        
+        if (parsed.account && parsed.account._links && parsed.account._links.self) {
+            accountUrl = parsed.account._links.self; // Ej: https://juandyna43.amocrm.com
+            // Eliminamos https:// para obtener solo el host
+            baseDomain = accountUrl.replace('https://', '').replace(/\/$/, '');
+        } else {
+            // Si no viene en el webhook, usa tu variable de entorno
+            baseDomain = 'juandyna43.amocrm.com'; 
+        }
+
+        console.log(`Usando dominio: ${baseDomain}`);
+
         const messageData = {
             text: note.text,
             chat_id: note.chat_id,
-            element_id: note.element_id, // ID del Lead
-            talk_id: note.talk_id,       // ID de la conversación
-            contact_id: note.contact_id, // ID del contacto
-            author_id: note.author.id,   // ID de quien envía
-            account_id: parsed.account.id // ID de la cuenta global
+            element_id: note.element_id, 
+            talk_id: note.talk_id,       
+            contact_id: note.contact_id, 
+            author_id: note.author.id,
+            account_id: parsed.account.id 
         };
 
-        if (!messageData.text || !messageData.chat_id) {
+        // Evitar bucles (no respondernos a nosotros mismos)
+        if (!messageData.text || messageData.text === '' || note.type === 'outgoing') {
             return res.sendStatus(200);
         }
-
-        // Lógica simple de respuesta (Tu IA o lógica condicional)
-        const userMessage = (messageData.text || '').toLowerCase().trim();
-        let respuestaBot = 'No entendí, ¿puedes repetir?';
         
-        if (userMessage.includes('hola')) {
-            respuestaBot = '¡Hola! Soy el vendedor de Jerseys. ¿Qué buscas hoy?';
-        } else {
-            respuestaBot = `Recibí tu mensaje: "${messageData.text}". En breve te atiendo.`;
-        }
+        // Respuesta simple del Bot
+        const userMessage = messageData.text.toLowerCase();
+        let respuestaBot = 'Recibido. Un asesor te contactará.';
+        if (userMessage.includes('hola')) respuestaBot = '¡Hola! ¿En qué puedo ayudarte?';
 
         // ---------------------------------------------------------
-        // PASO 3: REPLICAR NODO "Get token" (n8n)
-        // URL: https://[subdomain].kommo.com/ajax/v1/chats/session
+        // PASO 1: OBTENER TOKEN DE SESIÓN (AJAX)
         // ---------------------------------------------------------
-        console.log('Obteniendo token de sesión de chat...');
-        
-        const sessionUrl = `https://${KOMMO_SUBDOMAIN}.kommo.com/ajax/v1/chats/session`;
-        
+        console.log('Solicitando token de chat...');
+
+        // NOTA: Es crucial añadir headers que simulen ser un navegador
+        // y usar el dominio correcto (amocrm.com o kommo.com)
+        const sessionUrl = `https://${baseDomain}/ajax/v1/chats/session`;
+
         const sessionResponse = await axios.post(
             sessionUrl,
             qs.stringify({
@@ -73,41 +84,42 @@ app.post('/kommo-webhook', async (req, res) => {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     'Content-Type': 'application/x-www-form-urlencoded',
-                    // Importante: Usamos el token Bearer para autenticar esta petición AJAX
-                    'Authorization': `Bearer ${ACCESS_TOKEN}`, 
-                    // A veces Kommo requiere simular Cookies o User-Agent, 
-                    // pero con el Bearer suele bastar para este endpoint.
+                    'Authorization': `Bearer ${ACCESS_TOKEN}`,
+                    // Headers Anti-bloqueo 403:
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': `https://${baseDomain}/leads/detail/${messageData.element_id}`,
+                    'Origin': `https://${baseDomain}`
                 }
             }
         );
 
-        // Extraemos la info necesaria de la respuesta del token
-        // n8n path: $json.response.chats.session.access_token
+        if (!sessionResponse.data || !sessionResponse.data.response) {
+            throw new Error('No se recibió data válida en la sesión');
+        }
+
         const sessionData = sessionResponse.data.response.chats.session;
         const amojoAccessToken = sessionData.access_token;
         const personaName = sessionData.user.name;
         const personaAvatar = sessionData.user.avatar;
-        // n8n usa account.id del session response, aunque ya lo tenemos del webhook
+        // Importante: Usar el ID de cuenta que devuelve la sesión
         const sessionAccountId = sessionData.account.id; 
 
-        console.log('Token de chat obtenido con éxito.');
+        console.log('Token obtenido. Enviando mensaje a AmoJo...');
 
         // ---------------------------------------------------------
-        // PASO 4: REPLICAR NODO "Enviar el mensaje" (n8n)
-        // URL: https://amojo.kommo.com/v1/chats/[account_id]/[chat_id]/messages
+        // PASO 2: ENVIAR MENSAJE A AMOJO
         // ---------------------------------------------------------
         
         const amojoUrl = `https://amojo.kommo.com/v1/chats/${sessionAccountId}/${messageData.chat_id}/messages`;
 
-        // Construimos el body tal cual lo hace n8n (form-urlencoded)
         const messagePayload = {
             silent: 'false',
             priority: 'low',
-            'crm_entity[id]': messageData.element_id, // Lead ID donde se guarda
-            'crm_entity[type]': '2', // 2 = Lead
+            'crm_entity[id]': messageData.element_id,
+            'crm_entity[type]': '2', // Lead
             persona_name: personaName,
             persona_avatar: personaAvatar,
-            text: respuestaBot, // La respuesta generada
+            text: respuestaBot,
             recipient_id: messageData.author_id,
             crm_dialog_id: messageData.talk_id,
             crm_contact_id: messageData.contact_id,
@@ -117,30 +129,34 @@ app.post('/kommo-webhook', async (req, res) => {
 
         await axios.post(
             amojoUrl,
-            qs.stringify(messagePayload), // Axios no stringify por defecto a form-urlencoded complejo
+            qs.stringify(messagePayload),
             {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     'Content-Type': 'application/x-www-form-urlencoded',
-                    'X-Auth-Token': amojoAccessToken, // Token obtenido en el paso anterior
-                    'chatId': messageData.chat_id
+                    'X-Auth-Token': amojoAccessToken,
+                    'chatId': messageData.chat_id,
+                    // Headers extra por seguridad
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Origin': `https://${baseDomain}`
                 }
             }
         );
 
-        console.log(`Respuesta enviada correctamente al chat ${messageData.chat_id}`);
+        console.log('Mensaje enviado con éxito.');
         res.sendStatus(200);
 
     } catch (err) {
-        // Manejo de errores detallado para depuración
-        console.error('Error en el proceso:');
+        console.error('Error procesando webhook:');
         if (err.response) {
             console.error(`Status: ${err.response.status}`);
-            console.error('Data:', JSON.stringify(err.response.data, null, 2));
+            // Mostramos solo una parte del error para no llenar la consola de HTML
+            const dataStr = typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : err.response.data.toString().substring(0, 200);
+            console.error('Data Resumen:', dataStr);
         } else {
             console.error(err.message);
         }
-        res.sendStatus(200); // Siempre devolver 200 a Kommo
+        res.sendStatus(200);
     }
 });
 
